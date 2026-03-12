@@ -15,19 +15,39 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
+        .error-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #fff; color: #ef4444; padding: 20px; z-index: 9999;
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+        }
     </style>
 </head>
 <body class="bg-slate-50">
-    <!-- 加入一個初始的 Loading 提示，若腳本執行成功會被 React 覆蓋 -->
+    <!-- 錯誤顯示層 (偵錯用) -->
+    <div id="error-display" class="error-overlay">
+        <h1 style="font-size: 24px; font-weight: bold;">系統執行發生錯誤</h1>
+        <p id="error-message" style="margin-top: 10px; font-family: monospace;"></p>
+        <button onclick="location.reload()" style="margin-top: 20px; padding: 10px 20px; background: #4f46e5; color: #fff; border-radius: 8px;">重新整理</button>
+    </div>
+
     <div id="root">
         <div class="min-h-screen flex items-center justify-center">
-            <div class="text-slate-400 animate-pulse font-medium text-lg">系統載入中...</div>
+            <div class="flex flex-col items-center gap-4">
+                <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                <div class="text-slate-400 font-medium text-lg">正在啟動工安分析系統...</div>
+            </div>
         </div>
     </div>
 
     <script type="text/babel">
-        // 確保 React Hook 在最上方宣告
-        const { useState, useEffect } = React;
+        // 全域錯誤捕獲
+        window.onerror = function(message, source, lineno, colno, error) {
+            document.getElementById('error-display').style.display = 'flex';
+            document.getElementById('error-message').innerText = message;
+            return false;
+        };
+
+        const { useState, useEffect, useRef } = React;
 
         const App = () => {
             const [loading, setLoading] = useState(false);
@@ -37,45 +57,46 @@
                 analysis: null
             });
 
-            // 修正：動態讀取 Lucide 圖示的組件
+            // 圖示組件：更強健的讀取邏輯
             const Icon = ({ name, size = 20, className = "" }) => {
-                const [svg, setSvg] = useState("");
+                const iconRef = useRef(null);
+                
                 useEffect(() => {
-                    const renderIcon = () => {
-                        if (window.lucide && window.lucide.icons[name]) {
-                            const iconSvg = window.lucide.icons[name].toSvg({
+                    const render = () => {
+                        if (window.lucide && window.lucide.icons[name] && iconRef.current) {
+                            iconRef.current.innerHTML = window.lucide.icons[name].toSvg({
                                 width: size,
                                 height: size,
                                 class: className,
                                 'stroke-width': 2
                             });
-                            setSvg(iconSvg);
                         }
                     };
-                    
-                    // 初始嘗試
-                    renderIcon();
-                    
-                    // 如果 lucide 還沒載入，稍後再試一次
-                    if (!window.lucide) {
-                        const timer = setTimeout(renderIcon, 500);
-                        return () => clearTimeout(timer);
-                    }
+                    render();
+                    // 若尚未加載，稍後重試
+                    const timer = setTimeout(render, 500);
+                    return () => clearTimeout(timer);
                 }, [name, size, className]);
-                
-                return svg ? <span dangerouslySetInnerHTML={{ __html: svg }} className="inline-block leading-none" /> : <span style={{ width: size, height: size }} className="inline-block" />;
+
+                return <span ref={iconRef} className="inline-block leading-none" />;
             };
 
-            const delays = [1000, 2000, 4000, 8000];
+            const delays = [1000, 2000, 4000];
 
             const handleAnalyze = async () => {
                 if (!formData.description.trim()) return;
                 setLoading(true);
                 setError(null);
 
-                // --- 重要提醒：請在此填入您的 API Key ---
+                // --- 重要：請務必在此填入您的 API Key ---
                 const apiKey = ""; 
-                const systemPrompt = "你是資深工安專家。分析意外事件並提供專業的「三因分析」（直接原因、間接原因、基本原因）與改善建議。其中「間接原因」必須明確分為「不安全的狀況」與「不安全的行為」。請務必回傳符合 schema 的繁體中文 JSON。";
+                if (!apiKey) {
+                    setError("尚未設定 API Key，請在代碼中填入金鑰。");
+                    setLoading(false);
+                    return;
+                }
+
+                const systemPrompt = "你是資深工安專家。分析意外事件並提供專業的「三因分析」（直接、間接、基本原因）與改善建議。間接原因須分為「不安全的狀況」與「不安全的行為」。請回傳繁體中文 JSON。";
 
                 for (let i = 0; i <= delays.length; i++) {
                     try {
@@ -103,7 +124,7 @@
                             })
                         });
 
-                        if (!response.ok) throw new Error("API 請求失敗");
+                        if (!response.ok) throw new Error("API 請求異常: " + response.status);
                         const result = await response.json();
                         const data = JSON.parse(result.candidates[0].content.parts[0].text);
                         setFormData(prev => ({ ...prev, analysis: data }));
@@ -111,7 +132,7 @@
                         return;
                     } catch (err) {
                         if (i === delays.length) {
-                            setError("AI 服務忙碌中，請檢查 API Key 是否正確並重新嘗試。");
+                            setError("AI 服務忙碌中，請確認 API Key 是否有效。");
                             setLoading(false);
                         } else {
                             await new Promise(res => setTimeout(res, delays[i]));
@@ -120,122 +141,89 @@
                 }
             };
 
-            const handleReset = () => {
-                setFormData({ description: '', analysis: null });
-                setError(null);
-            };
-
             return (
-                <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row text-sm">
-                    {/* 側邊欄 */}
+                <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row text-sm animate-in fade-in duration-700">
                     <aside className="w-full md:w-64 bg-white border-b md:border-r border-slate-200 p-6 flex flex-col shadow-sm">
                         <div className="flex items-center gap-3 mb-10">
-                            <div className="bg-indigo-600 p-2 rounded-lg text-white shadow-lg shadow-indigo-100">
+                            <div className="bg-indigo-600 p-2 rounded-lg text-white shadow-lg">
                                 <Icon name="ShieldAlert" size={24} />
                             </div>
                             <h1 className="text-xl font-bold text-slate-800 tracking-tight">工安助手</h1>
                         </div>
-                        <div className="flex-grow">
-                            <div className="px-4 py-3 bg-indigo-50 text-indigo-700 rounded-xl font-bold flex items-center gap-3 border border-indigo-100">
-                                <Icon name="Sparkles" size={18} /> 深度分析模式
-                            </div>
-                        </div>
-                        <div className="mt-auto pt-6 border-t border-slate-100">
-                            <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                                <Icon name="Activity" size={12} className="text-indigo-400" /> Web Deployment v2.7
-                            </div>
+                        <div className="px-4 py-3 bg-indigo-50 text-indigo-700 rounded-xl font-bold flex items-center gap-3 border border-indigo-100">
+                            <Icon name="Sparkles" size={18} /> 深度分析模式
                         </div>
                     </aside>
 
-                    {/* 主內容區 */}
                     <main className="flex-grow p-6 md:p-10 max-w-5xl mx-auto w-full">
                         <header className="mb-8">
                             <h2 className="text-3xl font-bold text-slate-800 tracking-tight">事故診斷報告</h2>
-                            <p className="text-slate-500 mt-2 font-medium">請輸入事故經過，由 AI 進行專業的三因歸因分析。</p>
+                            <p className="text-slate-500 mt-2 font-medium">輸入事故經過，由 AI 進行專業的三因歸因分析。</p>
                         </header>
 
                         {error && (
                             <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-600 rounded-xl flex items-center gap-3 shadow-sm">
                                 <Icon name="AlertCircle" size={20} className="shrink-0" />
                                 <div className="font-bold">{error}</div>
-                                <button onClick={() => setError(null)} className="ml-auto hover:bg-red-100 p-1 rounded transition-colors">
-                                    <Icon name="RefreshCw" size={16} />
-                                </button>
+                                <button onClick={() => setError(null)} className="ml-auto p-1 hover:bg-red-100 rounded"><Icon name="RefreshCw" size={16} /></button>
                             </div>
                         )}
 
-                        <div className="space-y-6">
-                            {/* 輸入面板 */}
-                            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
-                                <div className="flex justify-between items-center mb-4">
-                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest">事件描述 / Description</label>
-                                    <button onClick={handleReset} className="text-xs text-slate-400 hover:text-indigo-600 font-bold px-2 py-1 hover:bg-slate-50 rounded transition-colors">清空重置</button>
-                                </div>
-                                <textarea 
-                                    placeholder="例如：員工在二樓維修時，因梯子未穩固且地上有油漬導致滑倒..."
-                                    value={formData.description}
-                                    onChange={e => setFormData({...formData, description: e.target.value})}
-                                    disabled={loading}
-                                    className="w-full h-40 p-5 rounded-xl border border-slate-200 bg-slate-50 focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 focus:bg-white outline-none resize-none transition-all text-slate-700 leading-relaxed font-medium"
-                                />
-                                <button 
-                                    onClick={handleAnalyze}
-                                    disabled={loading || !formData.description.trim()}
-                                    className="w-full mt-4 py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                                >
-                                    {loading ? <Icon name="Loader2" size={20} className="animate-spin" /> : <Icon name="Target" size={20} />}
-                                    {loading ? "AI 分析中..." : "啟動 AI 深度分析"}
-                                </button>
+                        <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6">
+                            <div className="flex justify-between items-center mb-4">
+                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest">事件描述</label>
+                                <button onClick={() => setFormData({description:'', analysis:null})} className="text-xs text-slate-400 hover:text-indigo-600 font-bold">清空重置</button>
                             </div>
-
-                            {/* 結果區塊 */}
-                            {formData.analysis && (
-                                <div className="bg-white rounded-2xl p-8 shadow-md border border-slate-200">
-                                    <div className="flex justify-between items-center mb-8 pb-4 border-b">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-2 h-8 bg-indigo-600 rounded-full" />
-                                            <h3 className="text-xl font-bold text-slate-800">事故分析結果</h3>
-                                        </div>
-                                        <div className={`px-4 py-1.5 rounded-full text-xs font-black tracking-wide border ${
-                                            formData.analysis.riskLevel === '高' ? 'bg-red-100 text-red-600 border-red-200' : 
-                                            formData.analysis.riskLevel === '中' ? 'bg-amber-100 text-amber-600 border-amber-200' : 
-                                            'bg-emerald-100 text-emerald-600 border-emerald-200'
-                                        }`}>
-                                            風險評級：{formData.analysis.riskLevel}
-                                        </div>
-                                    </div>
-
-                                    <div className="grid md:grid-cols-3 gap-6 mb-10">
-                                        <div className="bg-rose-50/30 p-5 rounded-2xl border border-rose-100/50">
-                                            <h4 className="flex items-center gap-2 text-xs font-black text-rose-600 mb-4 uppercase tracking-widest"><Icon name="Zap" size={16} /> 直接原因</h4>
-                                            <ul className="space-y-3">{formData.analysis.directCauses.map((c, i) => (<li key={i} className="text-sm text-slate-700 leading-relaxed pl-3 border-l-2 border-rose-300 italic">"{c}"</li>))}</ul>
-                                        </div>
-                                        <div className="bg-amber-50/30 p-5 rounded-2xl border border-amber-100/50">
-                                            <h4 className="flex items-center gap-2 text-xs font-black text-amber-600 mb-4 uppercase tracking-widest"><Icon name="Cpu" size={16} /> 間接原因</h4>
-                                            <div className="space-y-4">
-                                                <div>
-                                                    <p className="text-[10px] font-bold text-amber-700 mb-2">● 不安全的狀況 (環境)</p>
-                                                    <ul className="space-y-2">{formData.analysis.unsafeConditions.map((c, i) => (<li key={i} className="text-sm text-slate-700 pl-3 border-l-2 border-amber-300 font-medium">{c}</li>))}</ul>
-                                                </div>
-                                                <div>
-                                                    <p className="text-[10px] font-bold text-amber-700 mb-2">● 不安全的行為 (人為)</p>
-                                                    <ul className="space-y-2">{formData.analysis.unsafeActs.map((c, i) => (<li key={i} className="text-sm text-slate-700 pl-3 border-l-2 border-amber-300 font-medium">{c}</li>))}</ul>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="bg-indigo-50/30 p-5 rounded-2xl border border-indigo-100/50">
-                                            <h4 className="flex items-center gap-2 text-xs font-black text-indigo-600 mb-4 uppercase tracking-widest"><Icon name="ShieldCheck" size={16} /> 基本原因</h4>
-                                            <ul className="space-y-3">{formData.analysis.basicCauses.map((c, i) => (<li key={i} className="text-sm text-slate-700 leading-relaxed pl-3 border-l-2 border-indigo-300 font-medium">{c}</li>))}</ul>
-                                        </div>
-                                    </div>
-
-                                    <section className="bg-emerald-50/40 p-6 rounded-2xl border border-emerald-100/60">
-                                        <h4 className="flex items-center gap-2 text-sm font-black text-emerald-700 mb-6 uppercase tracking-widest"><Icon name="Lightbulb" size={20} /> 建議改善對策</h4>
-                                        <div className="grid md:grid-cols-2 gap-4">{formData.analysis.countermeasures.map((m, i) => (<div key={i} className="bg-white p-4 rounded-xl border border-emerald-100 flex items-start gap-3 shadow-sm"><Icon name="CheckCircle2" size={18} className="text-emerald-500 mt-0.5 shrink-0" /><span className="text-sm text-slate-700 font-semibold">{m}</span></div>))}</div>
-                                    </section>
-                                </div>
-                            )}
+                            <textarea 
+                                placeholder="例如：員工下樓梯時未握扶手，踩到水漬滑倒..."
+                                value={formData.description}
+                                onChange={e => setFormData({...formData, description: e.target.value})}
+                                disabled={loading}
+                                className="w-full h-40 p-5 rounded-xl border border-slate-200 bg-slate-50 focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none resize-none transition-all"
+                            />
+                            <button 
+                                onClick={handleAnalyze}
+                                disabled={loading || !formData.description.trim()}
+                                className="w-full mt-4 py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                            >
+                                {loading ? <Icon name="Loader2" size={20} className="animate-spin" /> : <Icon name="Target" size={20} />}
+                                {loading ? "正在生成報告..." : "啟動 AI 分析"}
+                            </button>
                         </div>
+
+                        {formData.analysis && (
+                            <div className="bg-white rounded-2xl p-8 shadow-md border border-slate-200 animate-in slide-in-from-bottom-4">
+                                <div className="flex justify-between items-center mb-8 pb-4 border-b">
+                                    <h3 className="text-xl font-bold text-slate-800">分析結果</h3>
+                                    <div className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full font-bold text-xs">風險：{formData.analysis.riskLevel}</div>
+                                </div>
+                                <div className="grid md:grid-cols-3 gap-6">
+                                    <div className="p-4 bg-rose-50 rounded-xl border border-rose-100">
+                                        <h4 className="text-rose-600 font-bold mb-3 flex items-center gap-2"><Icon name="Zap" size={16}/>直接原因</h4>
+                                        <ul className="space-y-2 text-slate-700">{formData.analysis.directCauses.map((c,i)=><li key={i}>• {c}</li>)}</ul>
+                                    </div>
+                                    <div className="p-4 bg-amber-50 rounded-xl border border-amber-100">
+                                        <h4 className="text-amber-600 font-bold mb-3 flex items-center gap-2"><Icon name="Cpu" size={16}/>間接原因</h4>
+                                        <div className="text-[11px] font-bold text-amber-700 mt-2">狀況/行為</div>
+                                        <ul className="space-y-2 text-slate-700 mt-1">
+                                            {[...formData.analysis.unsafeConditions, ...formData.analysis.unsafeActs].map((c,i)=><li key={i}>• {c}</li>)}
+                                        </ul>
+                                    </div>
+                                    <div className="p-4 bg-indigo-50 rounded-xl border border-indigo-100">
+                                        <h4 className="text-indigo-600 font-bold mb-3 flex items-center gap-2"><Icon name="ShieldCheck" size={16}/>基本原因</h4>
+                                        <ul className="space-y-2 text-slate-700">{formData.analysis.basicCauses.map((c,i)=><li key={i}>• {c}</li>)}</ul>
+                                    </div>
+                                </div>
+                                <div className="mt-8 p-6 bg-emerald-50 rounded-xl border border-emerald-100">
+                                    <h4 className="text-emerald-700 font-bold mb-4 flex items-center gap-2"><Icon name="Lightbulb" size={20}/>改善建議</h4>
+                                    <div className="grid md:grid-cols-2 gap-4">
+                                        {formData.analysis.countermeasures.map((m,i)=>(
+                                            <div key={i} className="bg-white p-3 rounded-lg border border-emerald-100 text-slate-700 shadow-sm">• {m}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </main>
                 </div>
             );
